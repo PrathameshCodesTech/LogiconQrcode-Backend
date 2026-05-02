@@ -1,8 +1,12 @@
 import json
 import re
-from datetime import datetime
+from datetime import datetime, date as date_type
 from django.db.models import Q
 from rest_framework import serializers
+
+# Rejects digits and common special chars unlikely to appear in real names.
+# Allows: Unicode letters (including Devanagari), spaces, hyphens, apostrophes, dots, etc.
+_NAME_RE = re.compile(r"^[^\d_@#$%^&*+=<>?/\\|{}\[\]~`]+$")
 
 from .models import Candidate, Submission, SubmissionAnswer, SubmissionDocument, SubmissionReview
 from .validators import validate_mobile_number, validate_campaign_token, validate_campaign_role
@@ -166,6 +170,21 @@ def _clean_str(val):
     return stripped if stripped else val.strip()
 
 
+def _validate_name_part(value: str, field_label: str, required: bool = False, min_len: int = 2) -> str:
+    cleaned = _clean_str(value) if value else ''
+    if not cleaned:
+        if required:
+            raise serializers.ValidationError(f"{field_label} is required.")
+        return ''
+    if min_len and len(cleaned) < min_len:
+        raise serializers.ValidationError(f"{field_label} must be at least {min_len} characters.")
+    if not _NAME_RE.match(cleaned):
+        raise serializers.ValidationError(
+            f"{field_label} cannot contain numbers or special characters."
+        )
+    return cleaned
+
+
 class SubmissionCreateSerializer(serializers.Serializer):
     campaign_token = serializers.CharField()
     role_id = serializers.IntegerField(required=False, allow_null=True)
@@ -181,25 +200,14 @@ class SubmissionCreateSerializer(serializers.Serializer):
         return validate_mobile_number(value)
 
     def validate_first_name(self, value):
-        cleaned = _clean_str(value)
-        if not cleaned:
-            raise serializers.ValidationError("First name is required.")
-        if len(cleaned) < 2:
-            raise serializers.ValidationError("First name must be at least 2 characters.")
-        return cleaned
+        return _validate_name_part(value, 'First name', required=True, min_len=2)
 
     def validate_middle_name(self, value):
-        if value:
-            return _clean_str(value)
-        return ''
+        # Optional; no minimum length to allow single-character initials.
+        return _validate_name_part(value, 'Middle name', required=False, min_len=0)
 
     def validate_last_name(self, value):
-        cleaned = _clean_str(value)
-        if not cleaned:
-            raise serializers.ValidationError("Last name is required.")
-        if len(cleaned) < 2:
-            raise serializers.ValidationError("Last name must be at least 2 characters.")
-        return cleaned
+        return _validate_name_part(value, 'Last name', required=True, min_len=2)
 
     def validate_other_role_title(self, value):
         if value:
@@ -286,7 +294,52 @@ class SubmissionCreateSerializer(serializers.Serializer):
             data['answers'] = validated_answers
 
         self._validate_required_fields(campaign, role, provided_field_ids, data.get('answers', []))
+
+        answers_by_key = {
+            ans['field'].field_key: ans['value']
+            for ans in data.get('answers', [])
+            if 'field' in ans
+        }
+        self._validate_business_rules(answers_by_key)
+
         return data
+
+    def _validate_business_rules(self, answers_by_key: dict) -> None:
+        """Cross-field business rules keyed on field_key values."""
+        def _to_float(val):
+            if val is None or val == '':
+                return None
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                return None
+
+        age = _to_float(answers_by_key.get('age'))
+        if age is not None:
+            if age < 18 or age > 60:
+                raise serializers.ValidationError("Age must be between 18 and 60.")
+
+        exp = _to_float(answers_by_key.get('experience_years'))
+        if exp is not None and age is not None:
+            if exp > age - 14:
+                raise serializers.ValidationError(
+                    "Experience years cannot be greater than age minus 14."
+                )
+
+        salary = _to_float(answers_by_key.get('expected_salary'))
+        if salary is not None and salary > 500000:
+            raise serializers.ValidationError("Expected salary cannot exceed 500000.")
+
+        joining_raw = answers_by_key.get('joining_availability')
+        if joining_raw and str(joining_raw).strip():
+            try:
+                joining = datetime.fromisoformat(str(joining_raw)).date()
+                if joining < date_type.today():
+                    raise serializers.ValidationError(
+                        "Joining availability cannot be in the past."
+                    )
+            except ValueError:
+                pass  # date format errors are caught by _validate_field_value
 
     def _validate_required_fields(self, campaign, role, provided_field_ids, validated_answers):
         required_fields = FormField.objects.filter(

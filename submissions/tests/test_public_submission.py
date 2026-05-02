@@ -5,7 +5,9 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import connection
 from django.test import TestCase, TransactionTestCase
 
-from surveys.models import CampaignRole, Organization, QRCampaign, Role, Site
+from django.utils import timezone
+
+from surveys.models import CampaignRole, FormField, Organization, QRCampaign, Role, Site
 from submissions.models import Candidate, Submission
 
 URL = '/api/public/submissions/'
@@ -38,8 +40,8 @@ class SubmissionFixtureMixin:
             payload.update(files)
         return self.client.post(URL, data=payload, format='multipart')
 
-    def _base_payload(self, role_id=None, other_role_title='', mobile='9876543210'):
-        return {
+    def _base_payload(self, role_id=None, other_role_title='', mobile='9876543210', **overrides):
+        payload = {
             'campaign_token': self.campaign.token,
             'first_name': 'Test',
             'last_name': 'User',
@@ -49,6 +51,8 @@ class SubmissionFixtureMixin:
             'other_role_title': other_role_title,
             'answers': json.dumps([]),
         }
+        payload.update(overrides)
+        return payload
 
 
 class TestValidSubmission(SubmissionFixtureMixin, TestCase):
@@ -192,3 +196,152 @@ class TestConcurrentCandidateCreation(SubmissionFixtureMixin, TransactionTestCas
         self.assertEqual(
             Candidate.objects.filter(mobile_number_normalized='9000000001').count(), 1
         )
+
+
+class TestNameValidation(SubmissionFixtureMixin, TestCase):
+
+    def setUp(self):
+        self._setup_fixtures()
+
+    def test_first_name_with_numbers_fails(self):
+        """first_name containing digits must return 400."""
+        resp = self._post(
+            self._base_payload(role_id=self.role.id, first_name='Ram1'),
+            files={'resume': _resume()},
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('first_name', resp.json())
+
+    def test_last_name_with_numbers_fails(self):
+        """last_name containing digits must return 400."""
+        resp = self._post(
+            self._base_payload(role_id=self.role.id, last_name='Kumar2'),
+            files={'resume': _resume()},
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('last_name', resp.json())
+
+    def test_middle_name_with_numbers_fails(self):
+        """middle_name containing digits must return 400 when provided."""
+        resp = self._post(
+            self._base_payload(role_id=self.role.id, middle_name='P3'),
+            files={'resume': _resume()},
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('middle_name', resp.json())
+
+    def test_valid_indian_name_passes(self):
+        """Names with hyphens, apostrophes, and Devanagari script should pass."""
+        resp = self._post(
+            self._base_payload(
+                role_id=self.role.id,
+                first_name="D'Souza",
+                middle_name='P',
+                last_name='Singh-Kapoor',
+            ),
+            files={'resume': _resume()},
+        )
+        self.assertEqual(resp.status_code, 201)
+
+
+class TestBusinessRules(SubmissionFixtureMixin, TestCase):
+
+    def setUp(self):
+        self._setup_fixtures()
+        self.age_field = FormField.objects.create(
+            campaign=self.campaign, label='Age', field_key='age',
+            field_type='number', is_required=False,
+        )
+        self.exp_field = FormField.objects.create(
+            campaign=self.campaign, label='Experience Years', field_key='experience_years',
+            field_type='number', is_required=False,
+        )
+        self.salary_field = FormField.objects.create(
+            campaign=self.campaign, label='Expected Salary', field_key='expected_salary',
+            field_type='number', is_required=False,
+        )
+        self.joining_field = FormField.objects.create(
+            campaign=self.campaign, label='Joining Availability', field_key='joining_availability',
+            field_type='date', is_required=False,
+        )
+
+    def _answers(self, **kwargs) -> str:
+        """Build JSON answers list from field_key=value kwargs."""
+        key_to_field = {
+            'age': self.age_field,
+            'experience_years': self.exp_field,
+            'expected_salary': self.salary_field,
+            'joining_availability': self.joining_field,
+        }
+        items = [
+            {'field_id': key_to_field[k].id, 'value': v}
+            for k, v in kwargs.items()
+            if k in key_to_field
+        ]
+        return json.dumps(items)
+
+    def test_age_below_18_fails(self):
+        """age=17 must return 400."""
+        resp = self._post(
+            self._base_payload(role_id=self.role.id, answers=self._answers(age=17)),
+            files={'resume': _resume()},
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_age_above_60_fails(self):
+        """age=61 must return 400."""
+        resp = self._post(
+            self._base_payload(role_id=self.role.id, answers=self._answers(age=61)),
+            files={'resume': _resume()},
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_experience_exceeds_age_minus_14_fails(self):
+        """age=20, experience_years=10 → max allowed is 6 → must return 400."""
+        resp = self._post(
+            self._base_payload(
+                role_id=self.role.id,
+                answers=self._answers(age=20, experience_years=10),
+            ),
+            files={'resume': _resume()},
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_salary_above_500000_fails(self):
+        """expected_salary=600000 must return 400."""
+        resp = self._post(
+            self._base_payload(role_id=self.role.id, answers=self._answers(expected_salary=600000)),
+            files={'resume': _resume()},
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_joining_date_yesterday_fails(self):
+        """joining_availability set to yesterday must return 400."""
+        from datetime import date, timedelta
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        resp = self._post(
+            self._base_payload(
+                role_id=self.role.id,
+                answers=self._answers(joining_availability=yesterday),
+            ),
+            files={'resume': _resume()},
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_valid_business_fields_pass(self):
+        """Valid age=25, exp=5, salary=30000, joining=tomorrow all pass."""
+        from datetime import date, timedelta
+        tomorrow = (date.today() + timedelta(days=1)).isoformat()
+        resp = self._post(
+            self._base_payload(
+                role_id=self.role.id,
+                answers=self._answers(
+                    age=25,
+                    experience_years=5,
+                    expected_salary=30000,
+                    joining_availability=tomorrow,
+                ),
+            ),
+            files={'resume': _resume()},
+        )
+        self.assertEqual(resp.status_code, 201)
