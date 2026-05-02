@@ -11,7 +11,11 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-7awy4^u)j!ej8uv2ir3mw_0pl!
 
 DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = [
+    host.strip()
+    for host in os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
+    if host.strip()
+]
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -96,11 +100,30 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
-CORS_ALLOWED_ORIGINS = [
-    'http://localhost:5173',
-    'http://localhost:3000',
-    'https://ats.vibecopilot.ai',
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        'CSRF_TRUSTED_ORIGINS',
+        'http://localhost:5173,http://127.0.0.1:5173'
+    ).split(',')
+    if origin.strip()
 ]
+
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        'CORS_ALLOWED_ORIGINS',
+        'http://localhost:5173,http://localhost:3000'
+    ).split(',')
+    if origin.strip()
+]
+
+SECURE_SSL_REDIRECT = os.getenv('SECURE_SSL_REDIRECT', 'False') == 'True'
+SESSION_COOKIE_SECURE = os.getenv('SESSION_COOKIE_SECURE', 'False') == 'True'
+CSRF_COOKIE_SECURE = os.getenv('CSRF_COOKIE_SECURE', 'False') == 'True'
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+SECURE_CONTENT_TYPE_NOSNIFF = True
+X_FRAME_OPTIONS = 'DENY'
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
