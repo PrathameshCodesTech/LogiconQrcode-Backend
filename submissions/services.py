@@ -1,4 +1,5 @@
 import re
+from django.db import IntegrityError, connection
 from django.utils import timezone
 from datetime import timedelta
 
@@ -22,10 +23,16 @@ def normalize_other_role_title(title: str) -> str:
 
 
 def get_or_create_candidate(mobile_normalized: str, full_name: str = '') -> tuple:
-    candidate, created = Candidate.objects.get_or_create(
-        mobile_number_normalized=mobile_normalized,
-        defaults={'mobile_number': mobile_normalized, 'latest_name': full_name},
-    )
+    try:
+        candidate, created = Candidate.objects.get_or_create(
+            mobile_number_normalized=mobile_normalized,
+            defaults={'mobile_number': mobile_normalized, 'latest_name': full_name},
+        )
+    except IntegrityError:
+        # Two concurrent requests for the same mobile hit the unique constraint.
+        # The other request already inserted — fetch it instead.
+        candidate = Candidate.objects.get(mobile_number_normalized=mobile_normalized)
+        created = False
     if not created and full_name:
         candidate.latest_name = full_name
         candidate.save(update_fields=['latest_name', 'updated_at'])
@@ -69,6 +76,13 @@ def create_submission_with_answers(validated_data: dict, request=None) -> Submis
     mobile_normalized = normalize_mobile_number(mobile)
 
     candidate, _ = get_or_create_candidate(mobile_normalized, full_name)
+
+    # On PostgreSQL, lock this candidate's row so that concurrent submissions
+    # for the same mobile are serialized before duplicate detection runs.
+    # SQLite does not support SELECT FOR UPDATE, so skip it there.
+    if connection.vendor != 'sqlite':
+        candidate = Candidate.objects.select_for_update().get(pk=candidate.pk)
+
     is_duplicate, duplicate_reason = detect_duplicate_submission(
         candidate, campaign, role, other_role_title_normalized
     )

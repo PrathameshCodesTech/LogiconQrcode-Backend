@@ -107,7 +107,7 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_THROTTLE_RATES': {
         'anon': '60/minute',
-        'public_submission': '10/minute',
+        'public_submission': '30/minute',
     },
 }
 

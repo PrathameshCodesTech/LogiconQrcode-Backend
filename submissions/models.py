@@ -62,6 +62,12 @@ class Submission(models.Model):
             models.Index(fields=['campaign']),
             models.Index(fields=['role']),
             models.Index(fields=['site']),
+            # Composite indexes for duplicate detection and admin list queries
+            models.Index(fields=['campaign', 'mobile_number_normalized']),
+            models.Index(fields=['campaign', 'mobile_number_normalized', 'role']),
+            models.Index(fields=['campaign', 'mobile_number_normalized', 'other_role_title_normalized']),
+            models.Index(fields=['candidate', 'campaign', 'submitted_at']),
+            models.Index(fields=['campaign', 'status', 'submitted_at']),
         ]
 
     def __str__(self):
