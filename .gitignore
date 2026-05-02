@@ -1,0 +1,30 @@
+# Python
+*.pyc
+*.pyo
+__pycache__/
+*.py[cod]
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Django
+db.sqlite3
+*.log
+media/
+
+# Environment variables
+.env
+.env.*
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.sw?
